@@ -1,0 +1,47 @@
+
+Use this to anonymize data we pull from Google Search Console
+
+```{r}
+library(tidyverse)
+
+x <- read_csv("gsc_data_raw.csv")
+```
+
+
+```{r}
+# CREATE ANONYMIZED KEYWORD INDEX
+anonymize <- x %>%
+  group_by(query) %>%
+  summarize(clicks = sum(clicks),
+            impressions = sum(impressions),
+            position = mean(position)) %>%
+  mutate(ctr = clicks / impressions,
+         anonymize = paste0("keyword_id_", row_number())) %>%
+  select(query, anonymize)
+```
+
+
+```{r}
+# JOIN ACTUAL DATA WITH ANONYMIZED KEYWORD INDEX
+clean <- x %>%
+  left_join(anonymize) %>%
+# CLEANING THE DATA BELOW FOR BLOG POST  
+  mutate(product_type = case_when(grepl("shoe", query) ~ 'shoes',
+                             grepl("sweater", query) ~ 'sweaters',
+                             grepl("shirt", query) ~ 'shirt',
+                             grepl("pants", query) ~ 'pants',
+                             grepl("sock", query) ~ 'socks',
+                             TRUE ~ 'other'),
+         brand = case_when(grepl("brand", query) ~ 'brand',
+                           TRUE ~ 'nonbrand')) %>%
+  select(date, query = anonymize, everything(), -query)     # PUT EVERYTHING BACK TOGETHER
+```
+
+
+```{r}
+# WRITE TO CSV FILE
+clean %>%
+  write_csv("gsc_anonymized_data.csv")
+```
+
+
