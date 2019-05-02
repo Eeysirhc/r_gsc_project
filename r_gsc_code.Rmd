@@ -1,0 +1,331 @@
+---
+title: Getting Started With R Using Google Search Console Data
+author: 'Christopher Yee'
+date: '2019-05-02'
+url: https://www.christopheryee.org/blog/getting-started-with-r-using-google-search-console-data/
+---
+
+# Setup
+
+## Install packages
+```{r}
+install.packages('tidyverse')           # DATA MANIPULATION AND VISUALIZATION ON STEROIDS
+install.packages('scales')              # ASSISTS WITH GRAPHICAL FORMATTING
+install.packages('lubridate')           # PACKAGE TO WRANGLE TIME SERIES DATA
+install.packages('searchConsoleR')      # INTERACT WITH GOOGLE SEARCH CONSOLE API
+devtools::install_github("dgrtwo/ebbr") # EMPIRICAL BAYES BINOMIAL ESTIMATION 
+install.packages('prophet')             # FORECASTING PACKAGE BY FACEBOOK
+```
+
+## Load packages
+Let's fire up a few of the packages we just installed.
+```{r}
+library(tidyverse)
+library(searchConsoleR)
+library(scales)
+library(lubridate)
+```
+
+
+# Get the data
+
+## Authenticiation
+
+```{r}
+scr_auth()
+```
+
+## Website parameters
+```{r}
+website <- "https://www.christopheryee.org/"
+start <- Sys.Date() - 50            # YOU CAN CHANGE THE LOOKBACK WINDOW HERE
+end <- Sys.Date() - 3               # MINUS 3 DAYS TO SHIFT WINDOW ON MISSING DATES
+download_dimensions <- c('date', 'query')
+type <- c('web')
+```
+
+## Assign data to variable
+```{r}
+data <- as_tibble(search_analytics(siteURL = website,
+                                   startDate = start,
+                                   endDate = end,
+                                   dimensions = download_dimensions,
+                                   searchType = type,
+                                   walk_data = "byDate"))
+```
+
+## Save file to CSV
+```{r}
+data %>%
+  write_csv("gsc_data_raw.csv")
+```
+
+# Process the data
+```{r}
+data
+```
+
+## Parse brand terms
+
+```{r}
+data_brand <- data %>%      # EDIT BELOW TO EXCLUDE YOUR OWN BRAND TERMS
+  mutate(brand = case_when(grepl("your_brand_term|brand_typo|more_brands", query) ~ 'brand',
+                           TRUE ~ 'nonbrand')) 
+```
+
+```{r}
+data_brand %>%
+  group_by(date, brand) %>%
+  summarize(clicks = sum(clicks)) %>%
+  ggplot() +
+  geom_line(aes(date, clicks, color = brand)) +
+  scale_y_continuous(labels = scales::comma_format()) +
+  theme_bw() +
+  labs(x = NULL,
+       y = 'Clicks')
+```
+
+## Segment by product
+```{r}
+data_clean <- data %>%
+  mutate(product_type = case_when(grepl("shoe", query) ~ 'shoes',
+                             grepl("sweater", query) ~ 'sweaters',
+                             grepl("shirt", query) ~ 'shirt',
+                             grepl("pants", query) ~ 'pants',
+                             grepl("sock", query) ~ 'socks',
+                             TRUE ~ 'other'),
+         brand = case_when(grepl("your_brand_term", query) ~ 'brand',
+                           TRUE ~ 'nonbrand')) 
+```
+
+```{r}
+data_clean %>%
+  group_by(date, product_type) %>%
+  summarize(clicks = sum(clicks)) %>%
+  filter(product_type != 'other') %>%     # EXCLUDING 'OTHER' TO NORMALIZE SCALE
+  ggplot() +
+  geom_line(aes(date, clicks, color = product_type)) +
+  scale_y_continuous(labels = scales::comma_format()) +
+  theme_bw() +
+  labs(x = NULL,
+       y = 'Clicks')
+```
+
+## Summarizing data
+```{r}
+data_clean %>%
+  group_by(product_type) %>% 
+  summarize(clicks = sum(clicks),
+            impressions = sum(impressions),
+            position = mean(position)) %>%
+  mutate(ctr = 100 * (clicks / impressions)) %>%      # NORMLALIZE TO 100%
+  arrange(desc(product_type)) 
+```
+
+# Exploratory data analysis
+```{r}
+# HISTOGRAM
+data_clean %>%
+  ggplot() +
+  geom_histogram(aes(ctr), binwidth = 0.01) +
+  scale_x_continuous(labels = percent_format()) +
+  scale_y_continuous(labels = comma_format()) +
+  labs(x = 'Click-through Rate',
+       y = 'Count') +
+  theme_bw()
+```
+
+
+```{r}
+data_clean %>%
+  ggplot() +
+  geom_histogram(aes(ctr, fill = brand), binwidth = 0.01) +   # ADD FILL = BRAND
+  scale_x_continuous(labels = percent_format()) +
+  scale_y_continuous(labels = comma_format()) +
+  labs(x = 'Click-through Rate',
+       y = 'Count') +
+  theme_bw()
+```
+
+
+```{r}
+# CUMULATIVE DISTRIBUTION
+data_clean %>%
+  ggplot() +
+  stat_ecdf(aes(ctr, color = brand)) +
+  scale_x_continuous(labels = percent_format()) +
+  scale_y_continuous(labels = percent_format()) +
+  labs(x = 'Click-through Rate',
+       y = NULL) +
+  theme_bw()
+```
+
+## Correlations
+
+And just for fun because why not.
+```{r}
+install.packages("corrplot")
+
+library(corrplot)
+
+corr_results <- data_clean %>%
+  select(clicks:position) %>% 
+  cor()
+
+corrplot(corr_results, method = 'color',
+         type = 'upper', addCoef.col = 'black',
+         tl.col = 'black', tl.srt = 45,
+         diag = FALSE)
+```
+
+# Click-through rate (CTR) benchmarking
+
+```{r}
+# BOXPLOT
+
+# CREATE VARIABLE
+avg_ctr <- data_clean %>%
+  group_by(query) %>%
+  summarize(clicks = sum(clicks),
+            impressions = sum(impressions),
+            position = median(position)) %>%
+  mutate(page_group = 1 * (position %/% 1)) %>% # CREATE NEW COLUMN TO GROUP AVG POSITIONS
+  filter(position < 21) %>%         # FILTER ONLY FIRST 2 PAGES
+  mutate(ctr =  100*(clicks / impressions)) %>%     # NORMALIZE TO 100%
+  ungroup()
+
+# PLOT OUR RESULTS
+avg_ctr %>%
+  ggplot() +
+  geom_boxplot(aes(page_group, ctr, group = page_group)) +
+  labs(x = "SERP Position",
+       y = "Click-through Rate (%)") +
+  theme_bw() 
+```
+
+
+## Estimating CTR with empirical Bayes
+
+```{r}
+library(ebbr)
+
+bayes_ctr <- data_clean %>%
+  group_by(query) %>%
+  summarize(clicks = sum(clicks),
+            impressions = sum(impressions),
+            position = median(position)) %>%
+  mutate(page_group = 1 * (position %/% 1)) %>%   
+  filter(position < 21) %>%     
+  add_ebb_estimate(clicks, impressions) %>%     # APPLY EBB ESTIMATION
+  ungroup()
+```
+
+
+```{r}
+bayes_ctr %>%
+  select(page_group, bayes_ctr = .fitted, avg_ctr = .raw) %>%
+  gather(bayes_ctr:avg_ctr, key = 'segment', value = 'ctr') %>%
+  ggplot() +
+  geom_boxplot(aes(page_group, ctr, fill = segment, group = page_group)) +
+  facet_grid(segment~.) +
+  scale_y_continuous(labels = percent_format()) +
+  theme_bw() +
+  labs(x = "SERP Position",
+       y = "Click-through Rate")
+```
+
+
+```{r}
+# APPLY EBB ESTIMATE
+bayes_product <- data_clean %>%
+  group_by(query, product_type) %>%
+  summarize(clicks = sum(clicks),
+            impressions = sum(impressions),
+            position = median(position)) %>%
+  mutate(page_group = 1 * (position %/% 1)) %>%   
+  filter(position < 21) %>%     
+  add_ebb_estimate(clicks, impressions) %>%
+  ungroup()
+
+# VISUALIZE RESULTS
+bayes_product %>%
+  select(page_group, product_type, bayes_ctr = .fitted, avg_ctr = .raw) %>%
+  gather(bayes_ctr:avg_ctr, key = 'segment', value = 'ctr') %>%
+  filter(product_type != 'socks', product_type != 'shoes', product_type != 'other') %>%
+  ggplot() +
+  geom_boxplot(aes(page_group, ctr, fill = segment, group = page_group)) +
+  facet_grid(product_type~segment) +
+  scale_y_continuous(labels = percent_format()) +
+  theme_bw() +
+  labs(x = "SERP Position",
+       y = "Click-through Rate")
+```
+
+## Combining results
+
+```{r}
+# CREATE INDEX
+bayes_index <- bayes_ctr %>%
+  select(page_group, bayes_ctr = .fitted, avg_ctr = .raw) %>%
+  group_by(page_group) %>%
+  summarize(bayes_benchamrk = mean(bayes_ctr))
+
+# JOIN DATAFRAMES
+bayes_ctr %>%
+  select(query:impressions, page_group, avg_ctr = .raw, bayes_ctr =.fitted) %>%
+  left_join(bayes_index)
+```
+
+
+# Forecasting search traffic
+
+
+## Clean and parse data
+```{r}
+library(prophet)
+
+data_time_series <- data_clean %>%
+  filter(brand == 'nonbrand') %>%
+  select(ds = date, 
+         y = clicks) %>%    # RENAME COLUMNS AS REQUIRED BY PROPHET
+  group_by(ds) %>%
+  summarize(y = sum(y))
+```
+
+## Build forecasting model
+```{r}
+m <- prophet(data_time_series)
+future <- make_future_dataframe(m, periods = 30)  # CHANGE PREDICTION WINDOW HERE
+forecast <- predict(m, future)
+
+plot(m, forecast)   # DEFAULT VISUALIZATION
+```
+
+## Combine with original data
+```{r}
+forecast <- forecast %>% as.tibble()    # TRANSFORM INTO TIDY FORMAT
+forecast$ds <- ymd(forecast$ds)
+forecast_clean <- forecast %>%
+  select(ds, yhat, yhat_upper, yhat_lower) %>%
+  left_join(data_time_series) %>%
+  rename(date = ds,
+         actual = y,
+         forecast = yhat,
+         forecast_low = yhat_lower,
+         forecast_high = yhat_upper)
+```
+
+## Plot forecast
+```{r}
+forecast_clean %>%
+  ggplot() +
+  geom_point(aes(date, actual), color = 'steelblue') +
+  geom_line(aes(date, actual), color = 'steelblue') +
+  geom_ribbon(aes(date, ymin = forecast_low, ymax = forecast_high), 
+              fill = 'salmon', alpha = 0.2) +
+  scale_y_continuous(labels = comma_format()) +
+  expand_limits(y = 0) + 
+  labs(x = NULL,
+       y = "Organic Search Traffic") +
+  theme_bw()
+```
